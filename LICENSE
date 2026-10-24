@@ -1,0 +1,41 @@
+MIT License
+
+Copyright (c) 2026 akali360-debian-fixes contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Note on bundled/derived material:
+
+  fixes/10-avs-sound.sh builds snd-soc-avs-max98357a.ko from the file
+  sound/soc/intel/avs/boards/max98357a.c, which is part of the Linux kernel
+  and is licensed under GPL-2.0 WITH Linux-syscall-note.
+
+  That source file is NOT vendored in this repository. The build script
+  obtains it at run time from the Debian `linux-source-*` package (via an
+  already-installed copy, or `apt-get download`).
+
+  The compiled module snd-soc-avs-max98357a.ko is therefore a derivative
+  work of the Linux kernel and is distributed under the terms of the GPL-2.0.
+  Corresponding source is available from https://www.kernel.org/ and from
+  the Debian `linux-source` package (see the script for the exact version it
+  resolves to on your system).
+
+  The shell scripts in this repository are MIT-licensed as above.
