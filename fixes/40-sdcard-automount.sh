@@ -74,11 +74,11 @@ if [ -z "$DEVICE" ]; then
   step "自动探测已挂载的可移动设备"
   # 找 /media/<user>/ 下真实挂载的、块设备来源的条目
   CAND=$(findmnt -rn -o TARGET,SOURCE,FSTYPE -D 2>/dev/null \
-    | awk -v p="/media/$TARGET_USER/" 'index($1,p)==1' | head -1)
+    | awk -v p="/media/$TARGET_USER/" 'index($1,p)==1' | sed -n '1p')
   if [ -z "$CAND" ]; then
     # 退而求其次: /run/media 下 (不同桌面约定)
     CAND=$(findmnt -rn -o TARGET,SOURCE,FSTYPE -D 2>/dev/null \
-      | awk -v p="/run/media/$TARGET_USER/" 'index($1,p)==1' | head -1)
+      | awk -v p="/run/media/$TARGET_USER/" 'index($1,p)==1' | sed -n '1p')
   fi
   if [ -n "$CAND" ]; then
     MOUNTPOINT=$(echo "$CAND" | awk '{print $1}')
@@ -111,7 +111,7 @@ fi
 
 # fstype
 FSTYPE=$(blkid -s TYPE -o value "$DEVICE" 2>/dev/null || true)
-[ -n "$FSTYPE" ] || FSTYPE=$(lsblk -no FSTYPE "$DEVICE" 2>/dev/null | head -1 || true)
+[ -n "$FSTYPE" ] || FSTYPE=$(lsblk -no FSTYPE "$DEVICE" 2>/dev/null | sed -n '1p' || true)
 [ -n "$FSTYPE" ] || die "无法识别 $DEVICE 的文件系统类型 (未格式化?"
 log "文件系统: $FSTYPE"
 

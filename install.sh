@@ -105,7 +105,7 @@ show_status() {
   printf '  %-4s %-22s %b%s%b\n' "30" "da7219-headphone" "$c" "$s" "$C_RESET"
 
   # 40 SD 卡
-  SDM=$(awk '$1 ~ /^UUID=/ && $2 ~ /\/media\// {print $2}' /etc/fstab 2>/dev/null | head -1)
+  SDM=$(awk '$1 ~ /^UUID=/ && $2 ~ /\/media\// {print $2}' /etc/fstab 2>/dev/null | sed -n '1p')
   if [ -n "$SDM" ]; then
     if findmnt -n "$SDM" >/dev/null 2>&1; then
       s="✓ 已修复 (挂载于 $SDM)"; c=$C_GRN
@@ -142,7 +142,7 @@ rollback() {
   require_root
   step "回滚修复 $num"
   local f
-  f=$(find "$ROOT/fixes" -name "$num-*.sh" | head -1)
+  f=$(find "$ROOT/fixes" -name "$num-*.sh" | sed -n '1p')
   [ -n "$f" ] || die "找不到编号 $num 的修复"
   log "每个修复会改动的文件 (最近的 .bak.* 即回滚源):"
   echo
@@ -281,7 +281,7 @@ fi
 
 FAIL_LIST=()
 for num in "${TARGETS[@]}"; do
-  script=$(find "$ROOT/fixes" -name "$num-*.sh" | head -1)
+  script=$(find "$ROOT/fixes" -name "$num-*.sh" | sed -n '1p')
   echo
   printf '%s╔══════════════════════════════════════════════╗%s\n' "$C_BLD" "$C_RESET"
   printf '%s║  运行  %s%s\n' "$C_BLD" "$(basename "$script")" "$C_RESET"

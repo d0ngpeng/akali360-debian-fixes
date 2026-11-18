@@ -73,6 +73,8 @@ Akali360 的扬声器走 **AVS DSP + MAX98357A I²S 功放**，缺这个 board d
 
 > ⚠️ **内核升级后需重跑**：外部模块绑定 vermagic，`linux-image` 更新后必须重新执行
 > `sudo ./install.sh --only 10`，否则新内核下模块失效、扬声器再次无声。
+> 该脚本是幂等的——vermagic 已匹配时自动跳过下载与编译；
+> `sudo bash fixes/10-avs-sound.sh --force` 可强制重建。
 
 ### 20 · 休眠死机 + 风扇狂转（**本仓库的核心修复**）
 

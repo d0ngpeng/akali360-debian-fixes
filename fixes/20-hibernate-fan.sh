@@ -73,7 +73,7 @@ grep -qw disk /sys/power/state 2>/dev/null \
 ok "内核支持 disk (休眠)"
 
 # systemd 版本需 >= 256 才认 HibernateMode=shutdown
-SDV=$(systemctl --version 2>/dev/null | head -1 | awk '{print $2}')
+SDV=$(systemctl --version 2>/dev/null | sed -n '1p' | awk '{print $2}')
 SDMAJ=${SDV%%.*}
 if [ "${SDMAJ:-0}" -lt 256 ]; then
   warn "systemd $SDV 低于 256, HibernateMode=shutdown 可能无效 (需 >= 256)"
@@ -96,7 +96,7 @@ SWAP_UUID=$(detect_swap_uuid) || true
 if [ -n "${SWAP_UUID:-}" ]; then
   ok "swap UUID: $SWAP_UUID"
   SWAP_DEV=$(blkid -U "$SWAP_UUID" 2>/dev/null || echo "?")
-  SWAP_SIZE=$(swapon --show=SIZE --noheadings 2>/dev/null | head -1)
+  SWAP_SIZE=$(swapon --show=SIZE --noheadings 2>/dev/null | sed -n '1p')
   log "swap 设备: $SWAP_DEV  大小: ${SWAP_SIZE:-未知}"
 else
   warn "未检测到已启用的块设备 swap"
@@ -113,7 +113,7 @@ fi
 IMG_SIZE=$(cat /sys/power/image_size 2>/dev/null || echo 0)
 if [ "${IMG_SIZE:-0}" -gt 0 ] && [ "$SWAP_UUID" != "PENDING" ]; then
   # 取 swap 总容量字节数
-  SWAP_BYTES=$(swapon --show=SIZE --noheadings --bytes 2>/dev/null | head -1 || echo 0)
+  SWAP_BYTES=$(swapon --show=SIZE --noheadings --bytes 2>/dev/null | sed -n '1p' || echo 0)
   if [ "${SWAP_BYTES:-0}" -gt 0 ]; then
     if [ "$IMG_SIZE" -gt "$SWAP_BYTES" ]; then
       warn "休眠镜像上限 ($((IMG_SIZE/1048576))M) 超过 swap 总量 ($((SWAP_BYTES/1048576))M)"

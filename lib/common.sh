@@ -4,6 +4,9 @@
 #           全部运行时自动探测, 以便公开分发与跨机复用。
 
 set -o pipefail
+# 注意: 开启 pipefail 后, "生产者 | head -1" 会因 head 提前关闭管道触发 SIGPIPE,
+#       整条管道返回 141 并被 set -e 终止 (例如 tar -tf 156MB 的源码包)。
+#       取首行请一律使用:  ... | sed -n '1p'   (sed 会读完输入, 不产生 SIGPIPE)
 
 # ---------- 输出 ----------
 if [ -t 1 ]; then
@@ -90,7 +93,7 @@ ensure_kernel_param() {
   local file=/etc/default/grub
   [ -f "$file" ] || die "找不到 $file"
   local current new
-  current=$(grep -E '^GRUB_CMDLINE_LINUX=' "$file" | head -1 | sed -E 's/^GRUB_CMDLINE_LINUX="(.*)"$/\1/')
+  current=$(grep -E '^GRUB_CMDLINE_LINUX=' "$file" | sed -n '1p' | sed -E 's/^GRUB_CMDLINE_LINUX="(.*)"$/\1/')
   [ -n "$current" ] || die "无法解析 GRUB_CMDLINE_LINUX"
   # 已含正确值则跳过
   if echo " $current " | grep -q " ${key}=${val} "; then
@@ -134,7 +137,7 @@ detect_swap_uuid() {
 # 输出 GRUB resume= 现有参数值 (用于校验/回退)
 current_grub_resume() {
   [ -f /boot/grub/grub.cfg ] || return 1
-  grep -oE 'resume=UUID=[0-9a-f-]+' /boot/grub/grub.cfg 2>/dev/null | head -1 | cut -d= -f3
+  grep -oE 'resume=UUID=[0-9a-f-]+' /boot/grub/grub.cfg 2>/dev/null | sed -n '1p' | cut -d= -f3
 }
 
 # 判断系统是否为本机型 (Google Akali360 / Acer Spin 13)

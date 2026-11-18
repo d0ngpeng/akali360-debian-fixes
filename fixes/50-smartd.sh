@@ -64,7 +64,7 @@ require_root
 
 command -v smartctl >/dev/null 2>&1 \
   || die "未安装 smartmontools, 无需处理: sudo apt install smartmontools 后才有此服务"
-ok "smartmontools 已安装: $(smartctl -V 2>/dev/null | head -1)"
+ok "smartmontools 已安装: $(smartctl -V 2>/dev/null | sed -n '1p')"
 
 # ---------------------------------------------------------------- 诊断
 step "诊断: 确实无 SMART 设备?"

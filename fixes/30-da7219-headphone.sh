@@ -84,7 +84,7 @@ fi
 command -v wireplumber >/dev/null 2>&1 || die "未安装 wireplumber"
 ok "wireplumber: $(wireplumber --version 2>/dev/null | tail -1 || echo 已安装)"
 
-WP_VER=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+WP_VER=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | sed -n '1p')
 if [ -n "$WP_VER" ]; then
   MAJ=${WP_VER%%.*}; MIN=${WP_VER##*.}
   if [ "$MAJ" -lt 0 ] || { [ "$MAJ" -eq 0 ] && [ "$MIN" -lt 5 ]; }; then

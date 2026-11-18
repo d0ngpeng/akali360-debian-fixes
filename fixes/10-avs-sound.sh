@@ -74,16 +74,24 @@ KDIR="/lib/modules/$KVER/build"
 ok "构建目录就绪: $KDIR"
 
 if [ "$FORCE" -eq 0 ] && [ -f "$MOD_PATH" ]; then
-  if modinfo "$MOD_PATH" 2>/dev/null | grep -q "vermagic:.*$KVER"; then
-    ok "模块已存在且 vermagic 匹配, 跳过构建 (--force 可强制重建)"
-    # 仍继续执行后面的安装/自动加载/验证
-    EXISTING=1
-  else
-    warn "已存在模块但 vermagic 不匹配, 将重新构建"
-    EXISTING=0
-  fi
+  # 用变量比较而非 "modinfo | grep -q" —— pipefail 下 grep -q 提前退出会让管道返回 141
+  VERMAGIC=$(modinfo -F vermagic "$MOD_PATH" 2>/dev/null | tr '\n' ' ')
+  case "$VERMAGIC" in
+    *"$KVER"*)
+      ok "模块已存在且 vermagic 匹配, 跳过构建 (--force 可强制重建)"
+      # 仍继续执行后面的自动加载/验证
+      EXISTING=1
+      SKIP_BUILD=1
+      ;;
+    *)
+      warn "已存在模块但 vermagic 不匹配, 将重新构建"
+      EXISTING=0
+      SKIP_BUILD=0
+      ;;
+  esac
 else
   EXISTING=0
+  SKIP_BUILD=0
 fi
 
 # ---------------------------------------------------------------- 取源码
@@ -97,7 +105,7 @@ find_source() {
   # 1) 已安装的 linux-source-*
   local pkg tarball
   for pkg in $(dpkg -l 2>/dev/null | awk '/^ii/ && $2 ~ /^linux-source/ {print $2}'); do
-    tarball=$(dpkg -L "$pkg" 2>/dev/null | grep -E '\.tar\.(xz|gz|zst)$' | head -1)
+    tarball=$(dpkg -L "$pkg" 2>/dev/null | grep -E '\.tar\.(xz|gz|zst)$' | sed -n '1p')
     if [ -n "$tarball" ] && [ -f "$tarball" ]; then
       echo "installed:$tarball"; return 0
     fi
@@ -127,17 +135,19 @@ if [ -z "$SRC_TAR" ] && ! is_dry_run; then
   if apt-cache show "$PKG" >/dev/null 2>&1; then
     log "下载 $PKG ..."
     (cd "$WORK" && apt-get download "$PKG") || warn "下载失败, 请手动安装: sudo apt install $PKG"
-    DEB=$(find "$WORK" -name "${PKG}_*.deb" | head -1)
+    DEB=$(find "$WORK" -name "${PKG}_*.deb" | sed -n '1p')
     if [ -n "$DEB" ]; then
       mkdir -p "$WORK/deb"
       dpkg-deb -x "$DEB" "$WORK/deb"
-      SRC_TAR=$(find "$WORK/deb" -name 'linux-source-*.tar.*' | head -1)
+      SRC_TAR=$(find "$WORK/deb" -name 'linux-source-*.tar.*' | sed -n '1p')
       ok "已解包 $PKG"
     fi
   fi
 fi
 
-if [ -z "$SRC_TAR" ] || [ ! -f "$SRC_TAR" ]; then
+if [ "$SKIP_BUILD" -eq 1 ] && ! is_dry_run; then
+  log "已安装模块与当前内核 vermagic 匹配, 跳过源码获取"
+elif [ -z "$SRC_TAR" ] || [ ! -f "$SRC_TAR" ]; then
   if is_dry_run; then
     # dry-run 不因缺源码而中断 —— 后续步骤一并以模拟方式展示
     warn "未找到内核源码 (dry-run, 不阻断)。真实执行时将自动 apt 下载"
@@ -153,7 +163,7 @@ fi
 if [ -n "$SRC_TAR" ]; then
   mkdir -p "$WORK/src"
   log "从 tarball 提取 AVS 目录 (只取需要的部分, 不解全量)..."
-  TOP=$(tar -tf "$SRC_TAR" | head -1 | cut -d/ -f1)
+  TOP=$(tar -tf "$SRC_TAR" | sed -n '1p' | cut -d/ -f1)
   tar -xf "$SRC_TAR" -C "$WORK/src" --strip-components=1 "$TOP/sound/soc/intel/avs" 2>/dev/null \
     || tar -xf "$SRC_TAR" -C "$WORK/src" --strip-components=1 --wildcards "*/sound/soc/intel/avs"
 
@@ -162,7 +172,11 @@ if [ -n "$SRC_TAR" ]; then
   ok "取得源码: max98357a.c ($(wc -l < "$C_FILE") 行)"
 else
   # dry-run 且无源码: 仅说明, 不中断后续模拟步骤
-  log "[dry-run] 跳过源码提取 (无 tarball), 后续步骤以模拟方式展示"
+  if is_dry_run; then
+    log "[dry-run] 跳过源码提取 (无 tarball), 后续步骤以模拟方式展示"
+  else
+    log "跳过源码提取 (无需重新构建)"
+  fi
 fi
 
 # ---------------------------------------------------------------- 构建
@@ -170,6 +184,8 @@ step "构建外部模块"
 
 if is_dry_run; then
   log "[dry-run] 将在 $KDIR 下以 M=$WORK/build 编译 $MOD_NAME.ko"
+elif [ "$SKIP_BUILD" -eq 1 ]; then
+  ok "已安装模块适配当前内核, 跳过构建"
 else
   BDIR="$WORK/build"
   mkdir -p "$BDIR/sound/soc/intel/avs/boards"
@@ -191,13 +207,14 @@ MK
 
   # 产物校验
   modinfo "$NEW_KO" >/dev/null 2>&1 || die "modinfo 无法解析产物"
-  V=$(modinfo "$NEW_KO" | awk -F: '/^vermagic/{gsub(/^ +/,"",$2);print $2}')
+  # modinfo -F <字段> 直接输出值, 避免 "alias: platform:xxx" 里冒号干扰字段解析
+  V=$(modinfo -F vermagic "$NEW_KO" | awk '{print $1}')
   case "$V" in
     "$KVER"*) ok "vermagic 匹配: $V" ;;
     *) die "vermagic 不匹配: $V (期望 $KVER...)" ;;
   esac
-  ALIAS=$(modinfo "$NEW_KO" | awk -F: '/^alias/{gsub(/^ +/,"",$2);print $2}')
-  [ "$ALIAS" = "$PLATFORM_ALIAS" ] || die "alias 不符: $ALIAS"
+  ALIAS=$(modinfo -F alias "$NEW_KO" 2>/dev/null | grep -x "$PLATFORM_ALIAS" | sed -n '1p' || true)
+  [ -n "$ALIAS" ] || die "alias 不符: $(modinfo -F alias "$NEW_KO" 2>/dev/null | tr '\n' ' ')"
   ok "alias 正确: $ALIAS"
 
   # 比对既有安装 (若存在)
@@ -206,8 +223,8 @@ MK
     printf '    %-10s  新: %-12s 旧: %s\n' "大小" \
       "$(stat -c%s "$NEW_KO")" "$(stat -c%s "$MOD_PATH")"
     for k in description name depends license; do
-      a=$(modinfo "$NEW_KO" | awk -F: -v k="$k" '$1==k{sub(/^ +/,"",$2);print $2}')
-      b=$(modinfo "$MOD_PATH" | awk -F: -v k="$k" '$1==k{sub(/^ +/,"",$2);print $2}')
+      a=$(modinfo -F "$k" "$NEW_KO" 2>/dev/null | tr '\n' ' ')
+      b=$(modinfo -F "$k" "$MOD_PATH" 2>/dev/null | tr '\n' ' ')
       [ "$a" = "$b" ] && s="一致" || s="不同"
       printf '    %-10s  %s\n' "$k" "$s"
     done
@@ -219,6 +236,8 @@ step "安装模块"
 
 if is_dry_run; then
   log "[dry-run] 将安装到 $MOD_PATH"
+elif [ "$SKIP_BUILD" -eq 1 ]; then
+  ok "模块已在位, 跳过安装"
 else
   mkdir -p "$(dirname "$MOD_PATH")"
   if [ -f "$MOD_PATH" ]; then
@@ -269,7 +288,10 @@ chk "模块文件存在"           test -f "$MOD_PATH"
 chk "modinfo 解析正常"       modinfo "$MOD_NAME"
 chk "已注册 MAX98357A 声卡"  grep -q "MAX98357A" /proc/asound/cards
 chk "自动加载配置存在"       test -f "$LOAD_CONF"
-chk "模块当前已加载"         lsmod | grep -q "^$MOD_NAME"
+# 注意: 这里不能写成 "chk ... lsmod | grep -q" —— 管道会落到 chk 外面,
+#       且 pipefail 下 grep -q 提前退出会让整条管道返回 141 而终止脚本。
+#       改用 sysfs 目录判断模块是否加载 (名字里的 - 在 sysfs 中是 _)。
+chk "模块当前已加载"         test -d "/sys/module/${MOD_NAME//-/_}"
 chk "平台别名已匹配"         grep -q "$PLATFORM_ALIAS" /sys/bus/platform/devices/*/modalias 2>/dev/null
 
 echo

@@ -27,6 +27,9 @@ dmesg | grep -iE 'error|fail|avs|hda'    # 内核相关消息
 sudo ./install.sh --only 10
 ```
 
+脚本是幂等的：若已安装模块的 vermagic 与当前内核匹配，会跳过源码下载（165 MB）与编译，
+只做自动加载配置和验证；确实需要重建时用 `sudo bash fixes/10-avs-sound.sh --force`。
+
 判断当前状态：
 
 ```bash
