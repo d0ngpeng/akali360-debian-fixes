@@ -26,7 +26,21 @@ ALL_FIXES=(
   "30:da7219-headphone:重启后耳机输出失效 (profile 回退)"
   "40:sdcard-automount:SD 卡开机自动挂载"
   "50:smartd:smartmontools 开机报错 (无 SMART 设备)"
+  "60:discover-kns:Discover 一打开就闪退 (KNS 后端竞态)"
+  "70:sleep-safety:合盖只关屏/低电量不保护 (电池耗尽)"
 )
+
+# 与 fixes/60-discover-kns-crash.sh 保持一致: 以 dpkg 文件清单为准
+discover_kns_so() {
+  local p
+  p=$(dpkg-query -L plasma-discover 2>/dev/null \
+        | grep -E '/discover/kns-backend\.so$' | sed -n '1p' || true)
+  if [ -z "$p" ]; then
+    p=$(find /usr/lib /usr/lib64 -type f -path '*/discover/kns-backend.so' 2>/dev/null \
+          | sed -n '1p' || true)
+  fi
+  printf '%s\n' "$p"
+}
 
 usage() {
   cat <<EOF
@@ -127,6 +141,42 @@ show_status() {
   fi
   printf '  %-4s %-22s %b%s%b\n' "50" "smartd" "$c" "$s" "$C_RESET"
 
+  # 60 Discover
+  DIS_KNS=$(discover_kns_so)
+  if ! dpkg-query -W -f='${Status}' plasma-discover 2>/dev/null | grep -q 'install ok installed'; then
+    s="– 未安装 plasma-discover"; c=$C_YLW
+  elif [ -z "$DIS_KNS" ]; then
+    s="– 未见 kns-backend.so (不适用)"; c=$C_YLW
+  elif [ ! -e "$DIS_KNS" ] && [ -e "${DIS_KNS}.disabled" ]; then
+    s="✓ 已修复 (KNS 后端已停用)"; c=$C_GRN
+  elif [ ! -e "$DIS_KNS" ]; then
+    s="△ 插件缺失, 非本脚本所为"; c=$C_YLW
+  else
+    s="✗ 未修复 (KNS 后端仍会触发闪退)"; c=$C_RED
+  fi
+  printf '  %-4s %-22s %b%s%b\n' "60" "discover-kns" "$c" "$s" "$C_RESET"
+
+  # 70 合盖 / 低电量
+  lid_ok=0
+  if command -v kreadconfig6 >/dev/null 2>&1 \
+     && [ "$(kreadconfig6 --file powerdevilrc --group AC --group SuspendAndShutdown --key LidAction 2>/dev/null)" = "1" ] \
+     && [ "$(kreadconfig6 --file powerdevilrc --group Battery --group SuspendAndShutdown --key LidAction 2>/dev/null)" = "1" ] \
+     && [ "$(kreadconfig6 --file powerdevilrc --group LowBattery --group SuspendAndShutdown --key LidAction 2>/dev/null)" = "8" ]; then
+    lid_ok=1
+  fi
+  up_ok=0
+  grep -q '^CriticalPowerAction=PowerOff$' /etc/UPower/UPower.conf 2>/dev/null && up_ok=1
+  lg_ok=0
+  grep -q '^HandleLidSwitch=suspend$' /etc/systemd/logind.conf.d/10-lid-sleep.conf 2>/dev/null && lg_ok=1
+  if [ "$lid_ok" -eq 1 ] && [ "$up_ok" -eq 1 ] && [ "$lg_ok" -eq 1 ]; then
+    s="✓ 已修复 (合盖=S3, 低电量=关机)"; c=$C_GRN
+  elif [ "$lid_ok" -eq 1 ] || [ "$up_ok" -eq 1 ] || [ "$lg_ok" -eq 1 ]; then
+    s="△ 部分生效 (合盖=$lid_ok UPower=$up_ok logind=$lg_ok)"; c=$C_YLW
+  else
+    s="✗ 未修复 (合盖不睡/低电量不保护)"; c=$C_RED
+  fi
+  printf '  %-4s %-22s %b%s%b\n' "70" "sleep-safety" "$c" "$s" "$C_RESET"
+
   echo
   printf '  失败单元: %s 个\n' "$(systemctl --failed --no-legend 2>/dev/null | wc -l)"
   printf '  内核: %s\n' "$(uname -r)"
@@ -185,6 +235,22 @@ rollback() {
       echo
       echo "回滚命令:"
       echo "  sudo systemctl enable --now smartmontools.service"
+      ;;
+    60)
+      echo "  · $(discover_kns_so)  (dpkg-divert 转移)"
+      echo
+      echo "回滚命令:"
+      echo "  sudo bash fixes/60-discover-kns-crash.sh --restore"
+      echo "  # 等价于: sudo dpkg-divert --remove --rename $(discover_kns_so)"
+      ;;
+    70)
+      echo "  · ~/.config/powerdevilrc  (备份: $(ls "$HOME/.config"/powerdevilrc.bak.* 2>/dev/null | tail -1 || echo 无))"
+      echo "  · /etc/UPower/UPower.conf  (备份: $(ls /etc/UPower/UPower.conf.bak.* 2>/dev/null | tail -1 || echo 无))"
+      echo "  · /etc/systemd/logind.conf.d/10-lid-sleep.conf"
+      echo
+      echo "回滚命令:"
+      echo "  sudo bash fixes/70-sleep-safety.sh --restore"
+      echo "  # 恢复合盖动作 / UPower 阈值的原始值 (记录在 /var/lib/akali360-fixes/70-sleep-safety.state)"
       ;;
   esac
 }
@@ -324,6 +390,8 @@ if [ ${#FAIL_LIST[@]} -eq 0 ]; then
     · 重启后再核对状态:
         ./install.sh --status
     · 20 的行为变化: 休眠后机器完全关机, 需按电源键开机恢复
+    · 70: 合盖已改为 S3 睡眠; 本机 swap 装不下休眠镜像, 因此不启用 hibernate
+      (低电量时合盖 / UPower 7% 走干净关机)
     · 若某项出错, 查看对应备份:  ls -la /etc/**/*.bak.*
 EOF
   fi

@@ -78,35 +78,35 @@ wpctl status
 
 ## 20 · 休眠 / 风扇
 
-### 休眠时报 "Not enough free memory"
+### 休眠时报 "Not enough free memory"，或写完镜像却黑屏假死
 
-**本机最可能遇到的问题。** swap LV 只有约 2.9G 且无剩余空间，若休眠时已用内存较多
-（本机 8G RAM，已用可达 4.4G+），LZO 压缩后仍可能超过 swap 容量。
+> **先说结论（2026-11 实测）**：本机 2.9 G 的 swap LV **不可能**装下休眠镜像。
+> 镜像大小约等于 `AnonPages + Shmem`（正常使用约 3.7 G）。写盘阶段会失败，
+> 表现为屏幕黑掉后长时间假死、最后回滚；`journalctl` 里
+> `PM: Image loading done` 一次都不会出现。
+>
+> 因此默认策略是**合盖走 S3 睡眠**（见 70 项）。只有在把 swap 扩到
+> 4 G 以上（建议 5 G）之后，才值得重新尝试休眠。
 
-**处理**：在**根分区**上加一个 swap 文件，并给它配 `resume_offset`：
+**为什么不能用 swap 文件补**：休眠恢复时内核要**线性读取**镜像，
+swap 文件在 ext4 上必须物理连续。本机根分区碎片化严重，`fallocate` 出来的
+8 G 文件有 25 个 extent，`e4defrag` 后仍有 9 个，resume 必然失败。
+可行的路只有**离线缩小根 LV**、给 swap LV 扩容：
 
 ```bash
-# 1. 确认根分区剩余空间 (至少 8G)
-df -h /
-
-# 2. 创建 8G swap 文件 (示例大小, 按实际内存已用量调整)
-sudo fallocate -l 8G /swapfile.img
-sudo chmod 600 /swapfile.img
-sudo mkswap /swapfile.img
-sudo swapon /swapfile.img
-
-# 3. 写入 fstab (用 swapon --show=NAME --noheadings 得到路径)
-echo '/swapfile.img none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# 4. 计算 resume_offset (单位为 4K 页)
-sudo filefrag -v /swapfile.img | awk '$1=="0:"{print "offset:",$4}'
-
-# 5. 给内核加 resume=UUID=<swap的UUID>:<offset>  (UUID 用 swap 分区的, 不是 swap 文件的)
-#    或者更简单: 用 resume= 后跟 swap 文件所在分区的 UUID 加 offset
+# 必须在 U 盘启动的环境里做（根文件系统不能在线缩小）
+sudo vgchange -ay
+sudo e2fsck -f /dev/mapper/<vg>-root
+sudo resize2fs /dev/mapper/<vg>-root 44G      # 先把文件系统缩到目标大小
+sudo lvreduce -L 44G /dev/mapper/<vg>-root    # 再缩 LV
+sudo lvextend -l +100%FREE /dev/mapper/<vg>-swap_1
+# 保留原 UUID，避免改 resume= / fstab
+sudo mkswap -U "$(blkid -s UUID -o value /dev/mapper/<vg>-swap_1)" /dev/mapper/<vg>-swap_1
 ```
 
-> initramfs 已确认支持 `resume_offset`。若不熟悉 offset 计算，也可直接把 swap LV
-> 扩容（`lvextend` + `mkswap`），但需先确认卷组有空闲 PE（本机 `Free PE = 0`，需先腾空间）。
+> 操作前务必备份。缩小根分区有风险，脚本不会自动执行。
+> 扩容后按 `free -h` 确认 swap ≥ `AnonPages + Shmem`，再实测
+> `sudo systemctl hibernate` 并检查 `PM: Image loading done` 是否出现。
 
 ### 按电源键开机后没有恢复桌面，直接进了新桌面
 
@@ -140,17 +140,19 @@ cat /sys/power/disk
 
 systemd **< 256** 不支持 `HibernateMode=shutdown`。本机为 systemd 257，正常。
 
-### 想改回"合盖即睡眠、开盖即恢复"的体验
+### 合盖即睡眠、开盖即恢复（现在是默认行为）
 
 S3 深度睡眠走的是**不同代码路径**，不经过固件 S4。本机 `mem_sleep` 支持
 `[s2idle] deep`，且 `deep` 已选中：
 
 ```bash
-systemctl suspend          # S3 睡眠, 不是休眠
+cat /sys/power/mem_sleep     # s2idle [deep]
+systemctl suspend            # 手动测一次 S3
 ```
 
-S3 的唤醒稳定性需自行验证（coreboot 对 S3 的支持通常好于 S4，但非绝对）。
-若 S3 也挂死，只能依赖休眠（20 项的 shutdown 模式）。
+70 号修复默认就是：AC/电池合盖 → S3，低电量合盖 → 干净关机。
+历史上本机 S3 的 entry/exit 多次成功；如果某次 KDE 会话无法恢复，
+先用 `Ctrl+Alt+F3` 切 TTY 看是否只是图形栈问题，而不是内核没醒。
 
 ---
 
@@ -261,6 +263,69 @@ sudo mmc extcsd read /dev/mmcblk0 | grep -iE 'LIFE_TIME|PRE_EOL'
 
 - `LIFE_TIME_EST_TYP_A` / `_B`：1=0-10% … 10=90-100%，**值越小越新**
 - `PRE_EOL_INFO`：1=正常　2=警告　3=紧急
+
+---
+
+## 70 · 合盖 / 低电量
+
+### 合盖后机器没睡，几小时后电池耗尽关机
+
+判断是不是"只关屏"：
+
+```bash
+# 1. 合盖动作（1=睡眠 2=休眠 8=关机 64=仅关屏）
+for g in AC Battery LowBattery; do
+  printf '%s=%s\n' "$g" "$(kreadconfig6 --file powerdevilrc --group "$g" \
+    --group SuspendAndShutdown --key LidAction)"
+done
+
+# 2. 上一次启动到底有没有睡
+sudo journalctl -b -1 | grep -E 'PM: suspend entry|PM: hibernation entry|PM: Image loading'
+#    什么都没有 = 根本没睡, 是硬断电
+```
+
+修复：
+
+```bash
+sudo bash fixes/70-sleep-safety.sh --dry-run
+sudo bash fixes/70-sleep-safety.sh
+```
+
+### 低电量阈值怎么定的
+
+- `PercentageLow=20`：Plasma 切到"低电量"配置 → 此时合盖会**关机**
+- `PercentageCritical=10` / `PercentageAction=7`：UPower 在 7% 触发动作
+- `CriticalPowerAction=PowerOff`：干净卸载后关机
+
+电量读数在 3% 附近可能停留十几分钟再直接掉电，所以动作阈值必须提前到 7%。
+
+### 合盖后黑屏很久、按电源键才回来
+
+这是**休眠失败**的典型表现（不是 S3）。确认日志里是否有
+`PM: hibernation: hibernation entry` 却没有 `PM: Image loading done`：
+
+```bash
+sudo journalctl -b -1 | grep -iE 'hibernation|Image loading|PM: suspend'
+sudo grep -c 'PM: Image loading done' /var/log/syslog 2>/dev/null || true
+```
+
+本机 swap 2.9 G 小于 `AnonPages + Shmem`（约 3.7 G），休眠镜像写不下。
+把任何动作指回 hibernate 都会复现黑屏假死：
+
+```bash
+# 确认没有残留的 hibernate 配置
+grep -rH 'hibernate' /etc/systemd/logind.conf.d/ /etc/systemd/sleep.conf.d/ 2>/dev/null
+grep -E '^CriticalPowerAction=' /etc/UPower/UPower.conf
+```
+
+### 想彻底恢复原状
+
+```bash
+sudo bash fixes/70-sleep-safety.sh --restore
+```
+
+原始值记录在 `/var/lib/akali360-fixes/70-sleep-safety.state`，
+UPower 原始配置在 `/etc/UPower/UPower.conf.bak.*`。
 
 ---
 

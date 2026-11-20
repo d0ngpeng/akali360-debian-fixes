@@ -46,6 +46,8 @@ sudo ./install.sh --all        # 确认无误后实际执行
 | **30** | `fixes/30-da7219-headphone.sh` | 重启后耳机输出失效 | WirePlumber 的 `available ~= "no"` 检查导致 profile 回退成纯输入 | 加 `device.profile.priority.rules` 兜底 |
 | **40** | `fixes/40-sdcard-automount.sh` | SD 卡每次开机需手动挂载 | 未写入 fstab | 写 fstab（用 UUID，带 `nofail` 防止卡启动） |
 | **50** | `fixes/50-smartd.sh` | `smartmontools.service` 开机必失败 | 本机无可监控的 SMART 设备（eMMC 不支持、USB 读卡器不支持 SAT） | 禁用服务，消除假警报 |
+| **60** | `fixes/60-discover-kns-crash.sh` | Discover 一打开就闪退 | KNS 后端批量失效触发 PackageKit 结果流 use-after-free | `dpkg-divert` 停用 KNS 后端，保留其他后端 |
+| **70** | `fixes/70-sleep-safety.sh` | 合盖只关屏，电池被耗光 | `LidAction=64` + `CriticalPowerAction=HybridSleep`，且本机休眠不可用 | 合盖=S3 睡眠，低电量=干净关机 |
 
 ---
 
@@ -106,6 +108,16 @@ initramfs 的 resume 脚本从 swap 读回镜像继续运行。**全程不经过
 >
 > 验证方法：`sudo systemctl hibernate` → 等完全断电（风扇停转）→ 按电源键开机 →
 > 确认窗口都还在。
+
+> ### ⚠️ 重要更正（2026-11）
+> 后续排查发现：**本机休眠从未真正成功过**——全部 journal 历史里
+> `PM: Image loading done` 出现 **0 次**。原因不是 S4，而是 **swap 太小**：
+> 镜像需要 ≈`AnonPages + Shmem`，本机约 3.7 G，而 swap 只有 2.9 G，写盘阶段
+> 就会失败并以"黑屏卡住 / 长时间假死"收场。
+>
+> 因此 **70 号修复不再把任何动作指向 hibernate**：合盖走 S3 睡眠。
+> 若你愿意离线缩小根 LV、把 swap 扩到 5 G 以上，再重新评估休眠。
+> 详见下文「70 · 合盖只关屏 / 低电量不保护」。
 
 ### 30 · 耳机输出重启后失效（DA7219 profile 回退）
 
@@ -190,6 +202,57 @@ sudo mmc extcsd read /dev/mmcblk0 | grep -iE 'LIFE_TIME|PRE_EOL'
 > 将来加装了 SATA/NVMe 硬盘后，恢复服务：`sudo ./install.sh --only 50 --rollback`
 > 或 `sudo ./fixes/50-smartd.sh --restore`
 
+### 60 · Discover 一打开就闪退（KNS 后端竞态）
+
+**症状**：打开 KDE Discover 后窗口闪一下就退出，`coredumpctl` 里是 SIGSEGV。
+
+**根因**：Discover 的 KNS（KDE Store）后端批量查询时，PackageKit 结果流被
+提前释放，随后 `PKResultsStream::sendResources` 继续访问已释放对象
+（gdb 里可以看到 `backend=0x...` 的野指针）。本机网络环境下 KNS 请求会
+集中失败，正好触发这条竞态。
+
+**方案**：用 `dpkg-divert` 把 Discover 专用的 `kns-backend.so` 改名停用，
+只关掉 KNS 商店后端，PackageKit / Flatpak / fwupd 三个后端照常工作。
+
+```bash
+sudo bash fixes/60-discover-kns-crash.sh --test     # 连续启动 5 次验证
+sudo bash fixes/60-discover-kns-crash.sh --restore  # 撤销
+```
+
+### 70 · 合盖只关屏 / 低电量不保护（电池被耗光）
+
+**症状**：合上盖子屏幕熄灭，以为机器睡了；几小时后回来机器已经没电关机，
+桌面和会话全部丢失。`sudo journalctl -b -1` 里**找不到任何** `PM: suspend entry`、
+`PM: hibernation entry` 或 `PM: Image loading` ——说明根本没睡，是硬断电。
+
+**根因**（三处叠加）：
+
+1. PowerDevil 三个电源配置的合盖动作都是 `LidAction=64`（TurnOffScreen）——
+   只关背光，CPU 和无线网卡继续满负荷跑。
+2. UPower `CriticalPowerAction=HybridSleep`、`PercentageAction=2.0`——
+   电量常常在 3% 停十几分钟后直接掉电，2% 根本来不及触发。
+3. 本机休眠实际不可用：镜像大小 ≈ `AnonPages + Shmem` ≈ 3.7 G，swap 只有
+   2.9 G，写盘阶段必失败（表现为黑屏假死，甚至挂 20 多分钟后回滚）。
+
+**方案**：
+
+| 场景 | 动作 |
+|---|---|
+| AC / 电池 合盖 | Sleep（S3 `deep`），开盖即恢复 |
+| 低电量 合盖 | Shutdown（干净卸载，避免在 S3 里被 EC 硬断电） |
+| UPower 10% / 7% | `PowerOff`（清醒时到点干净关机） |
+| 登录界面合盖（无 PowerDevil） | logind 兜底 `HandleLidSwitch=suspend` |
+
+```bash
+sudo bash fixes/70-sleep-safety.sh --dry-run   # 预览
+sudo bash fixes/70-sleep-safety.sh            # 应用
+sudo bash fixes/70-sleep-safety.sh --restore  # 回到修改前
+```
+
+> 想真正用上休眠，需要先让 swap 大于 `AnonPages + Shmem`（本机需 4 G 以上，
+> 建议 5 G）。当前根 LV 没有空闲空间（`VFree=0`），要在 U 盘启动下离线缩小
+> 根分区，脚本不会自动做这件事。
+
 ---
 
 ## 卸载 / 回滚
@@ -207,6 +270,8 @@ sudo ./install.sh --rollback 20    # 查看某项改动了哪些文件及回滚�
 | 30 | `/etc/wireplumber/wireplumber.conf.d/50-avs-da7219-profile.conf` |
 | 40 | `/etc/fstab` |
 | 50 | `smartmontools.service` 启用状态（无文件改动） |
+| 60 | `<discover>/kns-backend.so`（`dpkg-divert` 转移到 `.disabled`） |
+| 70 | `~/.config/powerdevilrc`、`/etc/UPower/UPower.conf`、`/etc/systemd/logind.conf.d/10-lid-sleep.conf` |
 
 改配置前会自动创建 `.bak.YYYYMMDD-HHMMSS` 备份，可用 `ls /etc/**/*.bak.*` 查看。
 
@@ -227,7 +292,8 @@ sudo ./install.sh --rollback 20    # 查看某项改动了哪些文件及回滚�
 
 见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。常见入口：
 
-- 休眠时报 `Not enough free memory` → 需要加 swap（本机 swap LV 无剩余空间）
+- 合盖后机器没睡 / 电池被耗光 → `sudo bash fixes/70-sleep-safety.sh`（合盖走 S3）
+- 休眠黑屏假死 → 本机 swap 装不下镜像，见 [70 章节](docs/TROUBLESHOOTING.md#70--合盖--低电量)
 - 内核升级后扬声器又没声了 → `sudo ./install.sh --only 10`
 - HDMI 音频异常 → 缺 `hda-8086280b-tplg.bin`，但驱动有内置 fallback，通常无需处理
 
