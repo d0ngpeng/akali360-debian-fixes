@@ -244,7 +244,8 @@ rollback() {
       echo "  # 等价于: sudo dpkg-divert --remove --rename $(discover_kns_so)"
       ;;
     70)
-      echo "  · ~/.config/powerdevilrc  (备份: $(ls "$HOME/.config"/powerdevilrc.bak.* 2>/dev/null | tail -1 || echo 无))"
+      PDHOME=$(getent passwd "${SUDO_USER:-$USER}" 2>/dev/null | cut -d: -f6)
+      echo "  · ${PDHOME:-~}/.config/powerdevilrc  (备份: $(ls "${PDHOME:-$HOME}/.config"/powerdevilrc.bak.* 2>/dev/null | tail -1 || echo 无))"
       echo "  · /etc/UPower/UPower.conf  (备份: $(ls /etc/UPower/UPower.conf.bak.* 2>/dev/null | tail -1 || echo 无))"
       echo "  · /etc/systemd/logind.conf.d/10-lid-sleep.conf"
       echo
